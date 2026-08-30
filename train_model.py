@@ -24,10 +24,11 @@ def find_column(columns: list[str], candidates: tuple[str, ...]) -> str | None:
 
 def normalize_label(value: object) -> int | None:
     text = str(value).strip().lower()
-    # Dataset encoding: 0 = Phishing, 1 = Legitimate
-    if text in {"0", "phishing", "phish", "malicious", "fraud", "bad", "true"}:
+    # Standard encoding: 0 = Legitimate, 1 = Phishing
+    # This matches the PhiUSIIL dataset and scikit-learn convention.
+    if text in {"1", "phishing", "phish", "malicious", "fraud", "bad", "true"}:
         return 1
-    if text in {"1", "legitimate", "benign", "safe", "good", "false"}:
+    if text in {"0", "legitimate", "benign", "safe", "good", "false"}:
         return 0
     return None
 
@@ -172,6 +173,61 @@ def train(dataset_path: str, output_dir: str = "model") -> None:
     print(f"Actual Legit  [{cm[0, 0]:6d} {cm[0, 1]:6d}]")
     print(f"       Phish  [{cm[1, 0]:6d} {cm[1, 1]:6d}]")
     
+    # Sanity-check: verify the model predicts correctly on known URLs before saving.
+    # This catches label-inversion bugs immediately — if google.com comes back as
+    # "Phishing" or a blatant phishing URL comes back as "Legitimate", something is
+    # wrong with the label mapping and the model should NOT be saved.
+    print("\n" + "=" * 80)
+    print("REAL-WORLD SANITY CHECK")
+    print("=" * 80)
+
+    from scanner.feature_extractor import feature_vector as _fv  # already imported above
+
+    _sanity = [
+        # (url, expected_label, description)
+        ("https://www.google.com", 0, "Known-safe: google.com"),
+        ("https://www.wikipedia.org", 0, "Known-safe: wikipedia.org"),
+        ("https://www.amazon.com", 0, "Known-safe: amazon.com"),
+        ("http://192.168.1.1/login/verify/account", 1, "Suspicious: private IP + login path"),
+        ("http://secure-paypal-login.verify-account.xyz/update", 1, "Suspicious: brand + .xyz + keywords"),
+        ("http://account-update.ebay-login.com.phish.ru/signin", 1, "Suspicious: brand abuse + .ru"),
+    ]
+
+    sanity_passed = True
+    print()
+    for _url, _expected, _desc in _sanity:
+        try:
+            _fvec = _fv(_url)
+            _fdf = pd.DataFrame([_fvec], columns=FEATURE_NAMES)
+            _pred = int(model.predict(_fdf)[0])
+            _prob = model.predict_proba(_fdf)[0]
+            _conf = _prob[_pred] * 100
+            _label_str = "Phishing" if _pred == 1 else "Legitimate"
+            _expected_str = "Phishing" if _expected == 1 else "Legitimate"
+            _ok = _pred == _expected
+            _status = "✓" if _ok else "✗ FAIL"
+            print(f"  {_status}  {_desc}")
+            print(f"       URL: {_url}")
+            print(f"       Predicted: {_label_str} ({_conf:.1f}%)  Expected: {_expected_str}")
+            if not _ok:
+                sanity_passed = False
+        except Exception as _e:
+            print(f"  ⚠ Could not check {_url}: {_e}")
+
+    if not sanity_passed:
+        print()
+        print("  ✗ SANITY CHECK FAILED — model predictions are inverted or unreliable.")
+        print("    The model will NOT be saved. Check normalize_label() in train_model.py")
+        print("    and confirm the dataset's label convention (0=Legitimate, 1=Phishing).")
+        print("=" * 80 + "\n")
+        raise RuntimeError(
+            "Sanity check failed: model predicts known-safe URLs as Phishing or vice-versa. "
+            "Inspect normalize_label() and the dataset label encoding before retraining."
+        )
+
+    print()
+    print("  ✓ All sanity checks passed — model generalizes correctly.")
+
     # Save model
     print("\n" + "=" * 80)
     print("SAVING MODEL")

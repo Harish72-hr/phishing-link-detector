@@ -58,7 +58,9 @@ def scan():
     try:
         model_result = predict_url(value, app.config["MODEL_PATH"], app.config["FEATURES_PATH"])
         prediction = model_result["prediction"]  # "Phishing" or "Legitimate"
-        confidence = model_result["confidence"]  # Confidence as decimal (0.0-1.0)
+        # Random Forest vote-fraction confidence is not a calibrated probability.
+        # Cap at 0.99 so the UI never claims absolute certainty, which would be misleading.
+        confidence = min(float(model_result["confidence"]), 0.99)
     except ModelUnavailableError as error:
         model_result = None
         prediction = "Unclassified"
